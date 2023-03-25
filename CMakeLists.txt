@@ -4,7 +4,7 @@ project(top-like
   DESCRIPTION "Topish program"
   LANGUAGES CXX
 )
-add_executable(${PROJECT_NAME} src/main.cpp src/cpu.cpp)
+add_executable(${PROJECT_NAME} src/main.cpp src/cpu.cpp src/web.cpp)
 target_include_directories(${PROJECT_NAME}
   PRIVATE
   src/)
