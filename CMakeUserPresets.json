@@ -1,0 +1,9 @@
+{
+    "version": 4,
+    "vendor": {
+        "conan": {}
+    },
+    "include": [
+        "/home/simon/Desktop/Projects/cpp/top-like/build/CMakePresets.json"
+    ]
+}
