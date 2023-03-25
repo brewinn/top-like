@@ -3,133 +3,103 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <boost/format.hpp>
+#include <iostream>
 
-namespace http = boost::beast::http;
 namespace net = boost::asio;
 using tcp = boost::asio::ip::tcp;
 
 #include "cpu.hpp"
 #include <fstream>
 
-std::string html_wrap(std::string cpu, double usage) {
-  auto fmt = boost::format(R"(
-<div class="bar">
-  <div class="bar-inner" style="width: %2$.2f"></div>
-  <label>%1%:%%%2$.2f</label>
-</div>)") % cpu %
-             usage;
-  return fmt.str();
-}
-
-std::string format_stats(std::vector<double> &&stats) {
-  if (stats.size() < 1) {
-    return "";
+std::string_view get_path(std::string_view message) {
+  auto first_line = message.substr(0, message.find("\n"));
+  auto start = first_line.find("/");
+  auto end = first_line.rfind(" HTTP");
+  if (start == std::string_view::npos || end == std::string_view::npos) {
+    return "/";
   }
-
-  std::string result = html_wrap("Overall Usage", stats[0]) + "\n";
-  auto individual_cpus = std::vector<int>(stats.begin() + 1, stats.end());
-  int i = 0;
-  for (auto usage : individual_cpus) {
-    result += html_wrap("core " + std::to_string(i), usage) + "\n";
-    i++;
-  }
-  return result;
-}
-
-http::request<http::string_body> parse_request(tcp::socket &socket) {
-  boost::asio::streambuf buffer;
-  boost::asio::read_until(socket, buffer, "\r\n\r\n");
-
-  std::string data = boost::asio::buffer_cast<const char *>(buffer.data());
-  http::request<http::string_body> request;
-  request.method(http::verb::get);
-  request.version(11);
-  request.target("/");
-  request.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-
-  // Parse the HTTP request
-  boost::system::error_code error;
-  http::read(socket, buffer, request, error);
-  if (error == boost::asio::error::eof) {
-    // Connection closed by peer
-    boost::system::error_code ec;
-    socket.shutdown(tcp::socket::shutdown_both, ec);
-  } else if (error) {
-    // Error while reading request
-    throw boost::system::system_error(error);
-  }
-
-  return request;
+  return message.substr(start, end - start);
 }
 
 void handle_request(tcp::socket &socket) {
-  // Respond to GET requests with the generated stats
-  auto req = parse_request(socket);
-  if (req.method() == http::verb::get && req.target() == "/") {
-    http::response<http::string_body> res{http::status::ok, req.version()};
-    res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-    res.set(http::field::content_type, "text/html");
-    res.keep_alive(req.keep_alive());
-    auto html_body = format_stats(get_cpu_usage());
-    auto body = boost::format(R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Generated Stats</title>
-    <link rel="stylesheet" type="text/css" href="styles.css">
-    <link rel="shortcut icon" href="/favicon.ico" />
-</head>
-<body>
-    %1%
-</body>
-</html>
-)") % html_body;
-    res.body() = body.str();
-    res.prepare_payload();
+  boost::asio::streambuf request;
+  boost::asio::read_until(socket, request, "\r\n");
 
-    http::write(socket, res);
-  } else if (req.method() == http::verb::get && req.target() == "/styles.css") {
-    http::response<http::string_body> res{http::status::ok, req.version()};
-    res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-    res.set(http::field::content_type, "text/html");
-    res.keep_alive(req.keep_alive());
-    std::ifstream css_file("styles.css");
+  std::string_view message =
+      boost::asio::buffer_cast<const char *>(request.data());
+  std::string_view path = get_path(message);
+
+  std::ostringstream response;
+  response << "HTTP/1.1 200 OK\r\n";
+
+  if (path == "/styles.css") {
+    std::ifstream css_file("src/styles.css");
     if (css_file.is_open()) {
-      std::stringstream ss;
-      ss << css_file.rdbuf();
-      res.body() = ss.str();
+      response << "Content-Type: text/css\r\n\r\n";
+      response << css_file.rdbuf();
+    } else {
+      response << "Content-Type: text/plain\r\n\r\n";
+      response << "Failed to open CSS file.";
     }
-    res.prepare_payload();
-    res.set(http::field::content_type, "text/css");
-
-    http::write(socket, res);
-  } else if (req.method() == http::verb::get &&
-             req.target() == "/favicon.ico") {
-    http::response<http::string_body> res{http::status::ok, req.version()};
-    res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-    res.keep_alive(req.keep_alive());
-    std::ifstream favicon_file("favicon.ico");
+  } else if (path == "/index.js") {
+    std::ifstream js_file("src/index.js");
+    if (js_file.is_open()) {
+      response << "Content-Type: application/javascript\r\n\r\n";
+      response << js_file.rdbuf();
+    } else {
+      response << "Content-Type: text/plain\r\n\r\n";
+      response << "Failed to open JS file.";
+    }
+  } else if (path == "/favicon.ico") {
+    std::ifstream favicon_file("src/favicon.ico");
     if (favicon_file.is_open()) {
-      std::stringstream ss;
-      ss << favicon_file.rdbuf();
-      res.body() = ss.str();
+      response << "Content-Type: image/x-icon\r\n\r\n";
+      response << favicon_file.rdbuf();
+    } else {
+      response << "Content-Type: text/plain\r\n\r\n";
+      response << "Failed to open favicon.";
     }
-    res.prepare_payload();
-    res.set(http::field::content_type, "image/x-icon");
-
-    http::write(socket, res);
+  } else if (path == "/stats") {
+    auto usages = get_cpu_usage();
+    response << "Content-Type: application/json\r\n\r\n";
+    response << R"({"usages":{)";
+    int i = 0;
+    for (auto usage : usages) {
+      if (i == 0) {
+        response << "\"overall"
+                 << "\":" << usage << ",";
+      } else if (i == usages.size() - 1) {
+        response << "\"core " << i << "\":" << usage;
+        break;
+      } else {
+        response << "\"core " << i << "\":" << usage << ",";
+      }
+      i++;
+    }
+    response << "}}\r\n\r\n";
+  } else if (path == "/") {
+    response << "Content-Type: text/html\r\n\r\n";
+    response << "<!DOCTYPE html>\n";
+    response << "<html>\n";
+    response << "<head>\n";
+    response
+        << "<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">\n";
+    response << "<script src=\"/index.js\"></script>\n";
+    response << "</head>\n";
+    response << "<body>\n";
+    response << "<h1>Hello, world!</h1>\n";
+    response << "<p>Stats:</p>\n";
+    response << "<ul id=\"usages\">\n";
+    // Output the initial stats here
+    response << "</ul>\n";
+    response << "</body>\n";
+    response << "</html>\n";
   } else {
-    // Respond to other requests with an error
-    http::response<http::string_body> res{http::status::bad_request,
-                                          req.version()};
-    res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-    res.set(http::field::content_type, "text/plain");
-    res.keep_alive(req.keep_alive());
-    res.body() = "Invalid request";
-    res.prepare_payload();
-
-    http::write(socket, res);
+    response << "Content-Type: text/plain\r\n\r\n";
+    response << "Invalid request.";
   }
+
+  boost::asio::write(socket, boost::asio::buffer(response.str()));
 }
 
 int main() {
