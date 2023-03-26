@@ -1,6 +1,9 @@
 function updateStats() {
+  // Start an asynchronous request for the stats
   var request = new XMLHttpRequest();
   request.open('GET', '/stats', true);
+  
+  // When the stats are ready, modify the list to display them
   request.onreadystatechange = function(){
     if (this.readyState == 4 && this.status == 200) {
       var stats = JSON.parse(this.responseText);
@@ -9,7 +12,7 @@ function updateStats() {
       usage_list.innerHTML = '';
       for (var key in usages) {
         var usage = document.createElement('li');
-        usage.innerText = key + ': ' + usages[key].toFixed(2);
+        usage.innerText = key + ': %' + usages[key].toFixed(2);
         usage_list.appendChild(usage);
       }
     }

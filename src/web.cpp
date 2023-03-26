@@ -19,14 +19,18 @@ using tcp = boost::asio::ip::tcp;
 #define FAVICON "/favicon.ico"
 #define STATS "/stats"
 
-static std::unordered_map<std::string_view,
-                          std::function<void(std::ostringstream &)>>
+// This map just converts routes to their corresponding handler. It convenient,
+// but a more complete solution would require regular expressions or some
+// similar mechanism.
+static const std::unordered_map<std::string_view,
+                                std::function<void(std::ostringstream &)>>
     route_map{{HOME, home_route},
               {CSS, css_route},
               {JS, js_route},
               {FAVICON, favicon_route},
               {STATS, stats_route}};
 
+// Attempt to extract the path from the first line of the http header.
 std::string_view get_path(std::string_view message) {
   auto first_line = message.substr(0, message.find("\n"));
   auto start = first_line.find("/");
@@ -37,6 +41,7 @@ std::string_view get_path(std::string_view message) {
   return message.substr(start, end - start);
 }
 
+// Route for serving the css file.
 void css_route(std::ostringstream &response) {
   std::ifstream css_file(CSS_PATH);
   if (css_file.is_open()) {
@@ -48,6 +53,7 @@ void css_route(std::ostringstream &response) {
   }
 }
 
+// Route for serving the javascript file.
 void js_route(std::ostringstream &response) {
   std::ifstream js_file(JS_PATH);
   if (js_file.is_open()) {
@@ -59,6 +65,7 @@ void js_route(std::ostringstream &response) {
   }
 }
 
+// Route for the favicon.
 void favicon_route(std::ostringstream &response) {
   std::ifstream favicon_file(FAVICON_PATH);
   if (favicon_file.is_open()) {
@@ -70,6 +77,7 @@ void favicon_route(std::ostringstream &response) {
   }
 }
 
+// Route for assessing the stats as json, used by the javascript.
 void stats_route(std::ostringstream &response) {
   auto usages = get_cpu_usage();
   response << "Content-Type: application/json\r\n\r\n";
@@ -90,45 +98,45 @@ void stats_route(std::ostringstream &response) {
   response << "}}\r\n\r\n";
 }
 
+// The default path, used to view the webpage.
 void home_route(std::ostringstream &response) {
-  response << "Content-Type: text/html\r\n\r\n";
-  response << "<!DOCTYPE html>\n";
-  response << "<html>\n";
-  response << "<head>\n";
-  response
-      << "<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">\n";
-  response << "<script src=\"/index.js\"></script>\n";
-  response << "</head>\n";
-  response << "<body>\n";
-  response << "<h1>Hello, world!</h1>\n";
-  response << "<p>Stats:</p>\n";
-  response << "<ul id=\"usages\">\n";
-  // Initial stats will be populated by JS
-  response << "</ul>\n";
-  response << "</body>\n";
-  response << "</html>\n";
+  std::ifstream html_file("src/index.html");
+  if (html_file.is_open()) {
+    response << "Content-Type: text/html\r\n\r\n";
+    response << html_file.rdbuf();
+  } else {
+    response << "Content-Type: text/plain\r\n\r\n";
+    response << "Failed to open html file.";
+  }
 }
 
+// Route for all other requests.
 void invalid_route(std::ostringstream &response) {
   response << "Content-Type: text/plain\r\n\r\n";
   response << "Invalid request.";
 }
 
+// Main function, takes a socket connection, parses the path, and dispatches it
+// to the appropriate route.
 void handle_request(tcp::socket &socket) {
+  // Read the http request from the socket, and parse out the path.
   net::streambuf request;
   net::read_until(socket, request, "\r\n");
 
   std::string_view message = net::buffer_cast<const char *>(request.data());
   std::string_view path = get_path(message);
 
+  // Create an initial response.
   std::ostringstream response;
   response << "HTTP/1.1 200 OK\r\n";
 
+  // Fill out the remainder of the response based on the path.
   try {
     route_map.at(path)(response);
   } catch (std::out_of_range) {
     invalid_route(response);
   }
 
+  // Write out the response to the socket.
   net::write(socket, boost::asio::buffer(response.str()));
 }
